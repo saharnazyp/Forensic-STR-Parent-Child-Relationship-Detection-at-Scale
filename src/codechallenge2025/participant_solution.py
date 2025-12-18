@@ -159,7 +159,8 @@ def match_single(
                     clr *= 0.001  # Exclusion penalty
 
         # Filter criteria
-        if exclusions > 3:
+        # True parent-child should have 0 exclusions (rarely 1 due to mutation)
+        if exclusions > 1:
             continue
         if consistent < 8:
             continue
