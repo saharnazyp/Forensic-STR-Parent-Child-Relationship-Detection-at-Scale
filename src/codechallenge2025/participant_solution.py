@@ -11,39 +11,15 @@ import pandas as pd
 from typing import List, Dict, Any
 
 
-# Allele frequencies (from dataset generator)
-ALLELE_FREQS = {
-    "D3S1358": {14: 0.15, 15: 0.25, 16: 0.22, 17: 0.20, 18: 0.13, 19: 0.05},
-    "vWA": {14: 0.10, 15: 0.12, 16: 0.20, 17: 0.25, 18: 0.20, 19: 0.10, 20: 0.03},
-    "FGA": {19: 0.05, 20: 0.10, 21: 0.15, 22: 0.20, 23: 0.18, 24: 0.15, 25: 0.10, 26: 0.07},
-    "D8S1179": {10: 0.05, 11: 0.08, 12: 0.10, 13: 0.30, 14: 0.25, 15: 0.15, 16: 0.07},
-    "D21S11": {27: 0.05, 28: 0.15, 29: 0.20, 30: 0.25, 31: 0.15, 32: 0.10, 30.2: 0.08, 31.2: 0.02},
-    "D18S51": {12: 0.08, 13: 0.15, 14: 0.20, 15: 0.18, 16: 0.12, 17: 0.10, 18: 0.08, 19: 0.06, 20: 0.03},
-    "D5S818": {9: 0.05, 10: 0.08, 11: 0.25, 12: 0.30, 13: 0.20, 14: 0.10, 15: 0.02},
-    "D13S317": {8: 0.05, 9: 0.08, 10: 0.10, 11: 0.25, 12: 0.20, 13: 0.18, 14: 0.12, 15: 0.02},
-    "D7S820": {8: 0.10, 9: 0.12, 10: 0.25, 11: 0.28, 12: 0.15, 13: 0.08, 14: 0.02},
-    "D16S539": {8: 0.05, 9: 0.20, 10: 0.15, 11: 0.25, 12: 0.20, 13: 0.10, 14: 0.05},
-    "TH01": {6: 0.20, 7: 0.15, 8: 0.18, 9: 0.22, 9.3: 0.15, 10: 0.08, 11: 0.02},
-    "TPOX": {8: 0.40, 9: 0.10, 10: 0.12, 11: 0.25, 12: 0.10, 13: 0.03},
-    "CSF1PO": {9: 0.05, 10: 0.20, 11: 0.25, 12: 0.30, 13: 0.12, 14: 0.08},
-    "D2S1338": {17: 0.08, 18: 0.05, 19: 0.10, 20: 0.15, 21: 0.08, 22: 0.07, 23: 0.12, 24: 0.15, 25: 0.15},
-    "D19S433": {13: 0.15, 14: 0.30, 14.2: 0.05, 15: 0.20, 15.2: 0.05, 16: 0.15, 17: 0.10},
-    "D22S1045": {11: 0.10, 14: 0.08, 15: 0.30, 16: 0.35, 17: 0.12, 18: 0.05},
-    "D10S1248": {11: 0.05, 12: 0.08, 13: 0.25, 14: 0.30, 15: 0.20, 16: 0.10, 17: 0.02},
-    "D1S1656": {12: 0.10, 13: 0.08, 14: 0.05, 15: 0.12, 16: 0.15, 17: 0.20, 17.3: 0.10, 18: 0.10, 18.3: 0.05},
-    "D12S391": {17: 0.05, 18: 0.15, 19: 0.12, 20: 0.20, 21: 0.18, 22: 0.15, 23: 0.10, 24: 0.05},
-    "D2S441": {10: 0.10, 11: 0.20, 11.3: 0.05, 12: 0.08, 13: 0.10, 14: 0.25, 15: 0.15, 16: 0.07},
-    "SE33": {19: 0.05, 20: 0.08, 21: 0.10, 22: 0.12, 23: 0.10, 24: 0.08, 25: 0.12, 26: 0.10, 27: 0.10, 28: 0.08, 29: 0.07},
-}
+# ============================================================
+# TUNABLE PARAMETERS
+# ============================================================
+PARTIAL_MIN = 1
+MISMATCH_MAX = 3
+PARTIAL_BONUS = 1.0
+PREFILTER_MIN = 5
 
 DEFAULT_FREQ = 0.01
-
-
-def get_freq(locus: str, allele: float) -> float:
-    """Get allele frequency."""
-    if locus in ALLELE_FREQS:
-        return ALLELE_FREQS[locus].get(allele, DEFAULT_FREQ)
-    return DEFAULT_FREQ
 
 
 def normalize_str(value) -> str:
@@ -53,10 +29,10 @@ def normalize_str(value) -> str:
     return str(value).strip()
 
 
-def parse_alleles(value) -> set:
-    """Parse allele string into a set of float values."""
+def parse_alleles(value) -> frozenset:
+    """Parse allele string into a frozenset of float values."""
     if pd.isna(value) or str(value).strip() in ("-", ""):
-        return set()
+        return frozenset()
     
     parts = str(value).strip().split(",")
     alleles = set()
@@ -67,50 +43,112 @@ def parse_alleles(value) -> set:
                 alleles.add(float(p))
             except ValueError:
                 pass
-    return alleles
+    return frozenset(alleles)
 
 
-def analyze_locus(query_str, candidate_str, locus: str) -> dict:
-    """
-    Analyze one locus.
+def build_cache(database_df: pd.DataFrame) -> dict:
+    """Build cache with index and frequencies (runs once)."""
+    loci = [col for col in database_df.columns if col != "PersonID"]
+    total = len(database_df)
     
-    Returns:
-    - type: "identical", "partial", "mutation", "mismatch", "missing"
-    - score: contribution to CLR
-    """
-    q_norm = normalize_str(query_str)
-    c_norm = normalize_str(candidate_str)
+    allele_index = {}
+    allele_counts = {}
+    profiles = {}
     
-    # Missing data
-    if q_norm == "-" or c_norm == "-":
-        return {"type": "missing", "score": 1.0}
+    for _, row in database_df.iterrows():
+        pid = row["PersonID"]
+        profile = {}
+        
+        for locus in loci:
+            raw_val = row[locus]
+            alleles = parse_alleles(raw_val)
+            raw_str = normalize_str(raw_val)
+            profile[locus] = (alleles, raw_str)
+            
+            for a in alleles:
+                key = (locus, a)
+                if key not in allele_index:
+                    allele_index[key] = set()
+                    allele_counts[key] = 0
+                allele_index[key].add(pid)
+                allele_counts[key] += 1
+        
+        profiles[pid] = profile
     
-    q_alleles = parse_alleles(query_str)
-    c_alleles = parse_alleles(candidate_str)
+    allele_freqs = {}
+    for (locus, allele), count in allele_counts.items():
+        if locus not in allele_freqs:
+            allele_freqs[locus] = {}
+        allele_freqs[locus][allele] = count / total
     
-    # Check if they share at least one allele
-    shared = q_alleles & c_alleles
+    # FIX: The 'return' statement was on a separate line, causing it to return None.
+    return {
+        "loci": loci,
+        "allele_index": allele_index,
+        "allele_freqs": allele_freqs,
+        "profiles": profiles,
+    }
+
+
+def score_candidate(query_parsed, cand_profile, loci, allele_freqs, 
+                    partial_min, mismatch_max, partial_bonus):
+    """Score a single candidate with given parameters."""
+    def get_freq(locus, allele):
+        if locus in allele_freqs and allele in allele_freqs[locus]:
+            return allele_freqs[locus][allele]
+        return DEFAULT_FREQ
     
-    if not shared:
-        # Check for mutation (±1 step)
-        for q in q_alleles:
-            for c in c_alleles:
-                if 0 < abs(q - c) <= 1.0:
-                    return {"type": "mutation", "score": 0.1}
-        # Complete mismatch
-        return {"type": "mismatch", "score": 0.0001}
+    total_lr = 1.0
+    identical_count = 0
+    partial_count = 0
+    mismatch_count = 0
+    mutation_count = 0
+    missing_count = 0
     
-    # They share allele(s)
-    # Calculate LR based on rarest shared allele
-    min_freq = min(get_freq(locus, a) for a in shared)
-    lr = 1.0 / min_freq
+    for locus in loci:
+        q_alleles, q_raw = query_parsed[locus]
+        c_alleles, c_raw = cand_profile[locus]
+        
+        if q_raw == "-" or c_raw == "-" or not q_alleles or not c_alleles:
+            missing_count += 1
+            continue
+        
+        shared = q_alleles & c_alleles
+        
+        if not shared:
+            is_mutation = any(0 < abs(q - c) <= 1.0 for q in q_alleles for c in c_alleles)
+            if is_mutation:
+                mutation_count += 1
+                total_lr *= 0.1
+            else:
+                mismatch_count += 1
+                total_lr *= 0.0001
+            continue
+        
+        min_freq = min(get_freq(locus, a) for a in shared)
+        total_lr *= 1.0 / min_freq
+        
+        if q_raw == c_raw:
+            identical_count += 1
+        else:
+            partial_count += 1
     
-    # Check if strings are identical or different
-    if q_norm == c_norm:
-        return {"type": "identical", "score": lr}
-    else:
-        # Different strings but shared allele = strong parent-child signal
-        return {"type": "partial", "score": lr}
+    # Apply filters
+    if mismatch_count > mismatch_max:
+        return None
+    if partial_count < partial_min:
+        return None
+    
+    score = total_lr * (1 + partial_count * partial_bonus)
+    
+    # FIX: The 'return' statement was also on a separate line here.
+    return {
+        "clr": score,
+        "posterior": partial_count / 21.0,
+        "consistent_loci": identical_count + partial_count,
+        "mutated_loci": mutation_count,
+        "inconclusive_loci": missing_count,
+    }
 
 
 def match_single(
@@ -118,75 +156,51 @@ def match_single(
 ) -> List[Dict]:
     """
     Find the top 10 candidate matches for a SINGLE query profile.
-    
-    Version 7: Better same-person vs parent-child distinction.
     """
+    # Build or retrieve cache
+    db_id = id(database_df)
+    if not hasattr(match_single, "_cache") or match_single._cache.get("db_id") != db_id:
+        match_single._cache = build_cache(database_df)
+        match_single._cache["db_id"] = db_id
+    
+    cache = match_single._cache
+    loci = cache["loci"]
+    allele_index = cache["allele_index"]
+    allele_freqs = cache["allele_freqs"]
+    profiles = cache["profiles"]
+    
     query_id = query_profile["PersonID"]
-    loci = [col for col in database_df.columns if col != "PersonID"]
     
+    # Parse query
+    query_parsed = {}
+    for locus in loci:
+        val = query_profile.get(locus, "-")
+        query_parsed[locus] = (parse_alleles(val), normalize_str(val))
+    
+    # Pre-filter using inverted index
+    candidate_shared = {}
+    for locus in loci:
+        q_alleles, _ = query_parsed[locus]
+        for allele in q_alleles:
+            key = (locus, allele)
+            if key in allele_index:
+                for pid in allele_index[key]:
+                    if pid != query_id:
+                        candidate_shared[pid] = candidate_shared.get(pid, 0) + 1
+    
+    promising = [pid for pid, cnt in candidate_shared.items() if cnt >= PREFILTER_MIN]
+    
+    # Score candidates
     candidates = []
+    for pid in promising:
+        result = score_candidate(
+            query_parsed, profiles[pid], loci, allele_freqs,
+            PARTIAL_MIN, MISMATCH_MAX, PARTIAL_BONUS
+        )
+        if result:
+            result["person_id"] = pid
+            candidates.append(result)
     
-    for idx, row in database_df.iterrows():
-        candidate_id = row["PersonID"]
-        
-        if candidate_id == query_id:
-            continue
-        
-        total_lr = 1.0
-        identical_count = 0
-        partial_count = 0
-        mismatch_count = 0
-        mutation_count = 0
-        missing_count = 0
-        
-        for locus in loci:
-            q_val = query_profile.get(locus, "-")
-            c_val = row[locus]
-            
-            result = analyze_locus(q_val, c_val, locus)
-            total_lr *= result["score"]
-            
-            if result["type"] == "identical":
-                identical_count += 1
-            elif result["type"] == "partial":
-                partial_count += 1
-            elif result["type"] == "mismatch":
-                mismatch_count += 1
-            elif result["type"] == "mutation":
-                mutation_count += 1
-            else:
-                missing_count += 1
-        
-        # Skip if too many mismatches (not related)
-        if mismatch_count > 2:
-            continue
-        
-        # Key insight: 
-        # - Same person (C000xxx): almost all loci are "identical", very few "partial"
-        # - Parent (P000xxx): many loci are "partial" (different strings, shared allele)
-        
-        # Require minimum partial matches to be considered parent-child
-        # With 21 loci, ~5% dropout, ~8% single allele, expect ~15-18 comparable loci
-        # Parent-child should have many partial matches (child's other allele differs)
-        
-        if partial_count < 3:
-            # Too few partial matches - likely same person, not parent-child
-            continue
-        
-        # Score: base LR + bonus for partial matches
-        # Partial matches are the KEY indicator of parent-child relationship
-        score = total_lr * (1 + partial_count * 0.5)
-        
-        candidates.append({
-            "person_id": candidate_id,
-            "clr": score,
-            "posterior": partial_count / 21.0,
-            "consistent_loci": identical_count + partial_count,
-            "mutated_loci": mutation_count,
-            "inconclusive_loci": missing_count,
-        })
-    
-    # Sort by score (highest first)
     candidates.sort(key=lambda x: x["clr"], reverse=True)
     return candidates[:10]
 
