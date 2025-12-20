@@ -18,7 +18,8 @@ PARTIAL_MIN = 1
 MISMATCH_MAX = 3
 PARTIAL_BONUS = 3.0
 PREFILTER_MIN = 5
-IDENTICAL_MAX = 18
+IDENTICAL_RATIO_MAX = 0.9
+PARTIAL_THRESHOLD = 3
 
 DEFAULT_FREQ = 0.01
 
@@ -91,7 +92,7 @@ def build_cache(database_df: pd.DataFrame) -> dict:
 
 
 def score_candidate(query_parsed, cand_profile, loci, allele_freqs, 
-                    partial_min, mismatch_max, partial_bonus, identical_max):
+                    partial_min, mismatch_max, partial_bonus):
     """Score a single candidate with given parameters."""
     def get_freq(locus, allele):
         if locus in allele_freqs and allele in allele_freqs[locus]:
@@ -138,12 +139,17 @@ def score_candidate(query_parsed, cand_profile, loci, allele_freqs,
         return None
     if partial_count < partial_min:
         return None
-    if identical_count > identical_max:
-        return None
+    
+    # Clever filter: reject self-matches or identical twins
+    comparable = identical_count + partial_count
+    if comparable > 0:
+        identical_ratio = identical_count / comparable
+        if identical_ratio > IDENTICAL_RATIO_MAX and partial_count < PARTIAL_THRESHOLD:
+            return None
     
     score = total_lr * (1 + partial_count * partial_bonus)
     
-    # Bayesian posterior with 50% prior: P(related|evidence) = LR / (LR + 1)
+    # Bayesian posterior with 50% prior
     posterior = score / (score + 1.0) if score > 0 else 0.0
     
     return {
@@ -161,7 +167,6 @@ def match_single(
     """
     Find the top 10 candidate matches for a SINGLE query profile.
     """
-    # Build or retrieve cache
     db_id = id(database_df)
     if not hasattr(match_single, "_cache") or match_single._cache.get("db_id") != db_id:
         match_single._cache = build_cache(database_df)
@@ -175,13 +180,11 @@ def match_single(
     
     query_id = query_profile["PersonID"]
     
-    # Parse query
     query_parsed = {}
     for locus in loci:
         val = query_profile.get(locus, "-")
         query_parsed[locus] = (parse_alleles(val), normalize_str(val))
     
-    # Pre-filter using inverted index
     candidate_shared = {}
     for locus in loci:
         q_alleles, _ = query_parsed[locus]
@@ -194,12 +197,11 @@ def match_single(
     
     promising = [pid for pid, cnt in candidate_shared.items() if cnt >= PREFILTER_MIN]
     
-    # Score candidates
     candidates = []
     for pid in promising:
         result = score_candidate(
             query_parsed, profiles[pid], loci, allele_freqs,
-            PARTIAL_MIN, MISMATCH_MAX, PARTIAL_BONUS, IDENTICAL_MAX
+            PARTIAL_MIN, MISMATCH_MAX, PARTIAL_BONUS
         )
         if result:
             result["person_id"] = pid
