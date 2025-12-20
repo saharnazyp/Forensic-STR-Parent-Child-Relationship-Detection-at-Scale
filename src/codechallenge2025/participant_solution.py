@@ -143,9 +143,12 @@ def score_candidate(query_parsed, cand_profile, loci, allele_freqs,
     
     score = total_lr * (1 + partial_count * partial_bonus)
     
+    # Bayesian posterior with 50% prior: P(related|evidence) = LR / (LR + 1)
+    posterior = score / (score + 1.0) if score > 0 else 0.0
+    
     return {
         "clr": score,
-        "posterior": partial_count / 21.0,
+        "posterior": posterior,
         "consistent_loci": identical_count + partial_count,
         "mutated_loci": mutation_count,
         "inconclusive_loci": missing_count,
