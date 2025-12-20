@@ -8,7 +8,6 @@ The find_matches function is provided for you — no need to change it!
 """
 
 import pandas as pd
-import numpy as np
 from typing import List, Dict, Any, Set, Tuple, Optional
 from collections import defaultdict, Counter
 import math
@@ -191,9 +190,9 @@ def compute_locus_lr(
                 # Use slightly higher effective mutation rate to account for uncertainty
                 # Also consider parent genotype - homozygous parents less likely to mutate
                 if is_parent_homozygous:
-                    effective_mutation_rate = mutation_rate * 1.2
+                    effective_mutation_rate = mutation_rate * 1.3  # Balanced mutation rate
                 else:
-                    effective_mutation_rate = mutation_rate * 1.5
+                    effective_mutation_rate = mutation_rate * 1.6  # Balanced mutation rate
                 mutation_lr = effective_mutation_rate / child_freq
                 mutation_lrs.append(mutation_lr)
     
@@ -280,19 +279,20 @@ def compute_clr_bidirectional(
     if non_missing_loci > 5:  # Only apply if we have enough data
         both_match_ratio = both_match_child / max(non_missing_loci, 1)
         
-        # If >18% of non-missing loci have both alleles matching, likely siblings - apply penalty
+        # If >16% of non-missing loci have both alleles matching, likely siblings - apply penalty
         # Stronger penalty for higher ratios (siblings typically have 30-50% both-match)
-        if both_match_ratio > 0.18:
-            # Penalty increases with ratio: 0.18 -> 0.3 penalty, 0.3 -> 2.5 penalty, 0.4 -> 3.5 penalty
-            penalty = min(3.5, (both_match_ratio - 0.18) * 18.0)  # Stronger penalty, up to 3.5 log units
+        if both_match_ratio > 0.16:
+            # Penalty increases with ratio: 0.16 -> 0.15 penalty, 0.25 -> 1.35 penalty, 0.35 -> 3.6 penalty
+            penalty = min(3.8, (both_match_ratio - 0.16) * 20.0)  # Lower threshold, up to 3.8 log units
             log_lr_child -= penalty
             log_lr_parent -= penalty
     
-    # Choose better direction: prefer higher LR, but consider exclusions
+    # Choose better direction: prefer higher LR, but consider exclusions and consistency
     lr_diff = log_lr_child - log_lr_parent
     
-    # If LR difference is small (< 2.0), prefer direction with fewer exclusions
-    if abs(lr_diff) < 2.0:
+    # If LR difference is small (< 2.5), prefer direction with fewer exclusions and more consistency
+    if abs(lr_diff) < 2.5:
+        # Prefer direction with fewer exclusions (strong negative signal)
         if exclusion_child < exclusion_parent:
             clr = 10.0 ** log_lr_child
             return clr, consistent_child, mutated_child, missing_child, 'candidate_parent'
@@ -304,6 +304,13 @@ def compute_clr_bidirectional(
             clr = 10.0 ** log_lr_child
             return clr, consistent_child, mutated_child, missing_child, 'candidate_parent'
         elif consistent_parent > consistent_child:
+            clr = 10.0 ** log_lr_parent
+            return clr, consistent_parent, mutated_parent, missing_parent, 'candidate_child'
+        # If still tied, prefer fewer mutations
+        if mutated_child < mutated_parent:
+            clr = 10.0 ** log_lr_child
+            return clr, consistent_child, mutated_child, missing_child, 'candidate_parent'
+        elif mutated_parent < mutated_child:
             clr = 10.0 ** log_lr_parent
             return clr, consistent_parent, mutated_parent, missing_parent, 'candidate_child'
     
@@ -321,7 +328,7 @@ def prefilter_candidates(
     database_df: pd.DataFrame,
     inverted_index: Dict[str, Dict[str, Set[int]]],
     allele_freqs: Dict[str, Dict[str, float]],
-    top_n: int = 4000
+    top_n: int = 5500
 ) -> List[int]:
     """
     Pre-filter candidates using multiple strategies, optimized for large databases:
@@ -367,7 +374,7 @@ def prefilter_candidates(
                 base_weight = min(-math.log10(freq), 6.0)
                 # Extra boost for very rare alleles (< 5%)
                 is_rare = freq < 0.05
-                weight = base_weight * 1.3 if is_rare else base_weight
+                weight = base_weight * 1.4 if is_rare else base_weight  # 40% boost for rare alleles
                 
                 # Fast lookup: use precomputed person_ids array
                 for idx in inverted_index[locus][allele]:
@@ -385,8 +392,8 @@ def prefilter_candidates(
                     if mut_allele in inverted_index[locus]:
                         freq = allele_freqs.get(locus, {}).get(mut_allele, 0.001)
                         freq = max(freq, 0.0001)
-                        # Higher weight for mutations (0.5x) - they're important signals
-                        weight = 0.5 * min(-math.log10(freq), 6.0)
+                        # Higher weight for mutations (0.65x) - they're important signals for true matches
+                        weight = 0.65 * min(-math.log10(freq), 6.0)
                         
                         for idx in inverted_index[locus][mut_allele]:
                             if person_ids[idx] != query_id:  # Fast lookup
@@ -401,12 +408,12 @@ def prefilter_candidates(
         match_count = candidate_match_counts[idx]
         if match_count > 0:
             # Multi-locus bonus: stronger for more matches
-            multi_locus_bonus = 1.0 + 0.18 * math.sqrt(match_count)
+            multi_locus_bonus = 1.0 + 0.22 * math.sqrt(match_count)  # Stronger bonus
             candidate_scores[idx] *= multi_locus_bonus
             
             # Extra boost for rare allele matches (very strong signal)
             if candidate_rare_matches[idx] >= 2:
-                candidate_scores[idx] *= 1.6
+                candidate_scores[idx] *= 1.8  # Strong boost for rare matches
     
     # Use heap for top-N selection if we have many candidates (more efficient than full sort)
     if len(candidate_scores) > top_n * 2:
@@ -445,23 +452,13 @@ def prefilter_candidates(
     # If still need more, add random candidates (shouldn't happen often)
     if len(result_indices) < top_n:
         remaining_needed = top_n - len(result_indices)
-        # Use numpy for faster random sampling if available, otherwise sequential
-        try:
-            import numpy as np
-            all_indices = np.arange(len(database_df))
-            mask = person_ids != query_id
-            valid_indices = all_indices[mask]
-            # Exclude already selected
-            valid_indices = [idx for idx in valid_indices if idx not in seen]
-            result_indices.extend(valid_indices[:remaining_needed])
-        except ImportError:
-            # Fallback to sequential scan
-            for idx in range(len(database_df)):
-                if person_ids[idx] != query_id and idx not in seen:
-                    result_indices.append(idx)
-                    seen.add(idx)
-                    if len(result_indices) >= top_n:
-                        break
+        # Sequential scan (this fallback should rarely be needed)
+        for idx in range(len(database_df)):
+            if person_ids[idx] != query_id and idx not in seen:
+                result_indices.append(idx)
+                seen.add(idx)
+                if len(result_indices) >= top_n:
+                    break
     
     return result_indices
 
@@ -525,9 +522,9 @@ def match_single(
     
     inverted_index = _cache_inverted_index
     
-    # Step 3: Pre-filter candidates - 4000 balances accuracy and speed
+    # Step 3: Pre-filter candidates - 5500 balances accuracy and speed
     # Efficient due to inverted index prefiltering
-    n_candidates = min(4000, len(database_df))
+    n_candidates = min(5500, len(database_df))
     candidate_indices = prefilter_candidates(
         query_profile, database_df, inverted_index, allele_freqs, n_candidates
     )
@@ -569,10 +566,10 @@ def match_single(
         total_loci_checked = consistent + mutated
         if total_loci_checked > 0:
             consistency_ratio = consistent / max(total_loci_checked, 1)
-            # Boost if >65% of non-missing loci are consistent (very strong signal)
-            if consistency_ratio > 0.65 and consistent >= 14:
+            # Boost if >59% of non-missing loci are consistent (very strong signal)
+            if consistency_ratio > 0.59 and consistent >= 12:
                 # Stronger boost for higher consistency
-                boost_factor = 1.0 + (consistency_ratio - 0.65) * 2.0  # Up to 1.5x boost
+                boost_factor = 1.0 + (consistency_ratio - 0.59) * 2.9  # Up to 1.5x boost
                 clr *= min(boost_factor, 1.5)  # Cap at 1.5x
         
         # Compute posterior probability (prior = 0.5)
