@@ -1,117 +1,78 @@
 # tests/update_leaderboard.py
 """
-Updates Leaderboard.md and leaderboard.json from test results.
-Works locally AND in GitHub Actions.
+Reads manually reviewed all_results.csv and generates Leaderboard.md + leaderboard.json
+Final score = auto_score (0–100) + review_score (0–20), capped at 120.
+The 'features' column is no longer displayed in the leaderboard.
 """
 
-import json
-import os
-from datetime import datetime
 import pandas as pd
+import json
+from datetime import datetime
 
+CSV_INPUT = "src/codechallenge2025/results/all_results.csv"
 LEADERBOARD_JSON = "leaderboard.json"
 LEADERBOARD_MD = "Leaderboard.md"
 
 
-def load_leaderboard():
-    if os.path.exists(LEADERBOARD_JSON):
-        with open(LEADERBOARD_JSON, "r") as f:
-            return json.load(f)
-    return []
+def main():
+    if not pd.io.common.file_exists(CSV_INPUT):
+        print(f"❌ {CSV_INPUT} not found. Run `python tests/run_challenge.py` first.")
+        return
 
+    df = pd.read_csv(CSV_INPUT)
 
-def save_leaderboard(entries):
-    with open(LEADERBOARD_JSON, "w") as f:
-        json.dump(entries, f, indent=2)
+    # Ensure required columns exist
+    required = [
+        "user",
+        "auto_score",
+        "review_score",
+        "accuracy",
+        "runtime_sec",
+        "submission_date",
+    ]
+    for col in required:
+        if col not in df.columns:
+            raise ValueError(f"Missing column in CSV: {col}")
 
+    # Clean and compute scores
+    df["auto_score"] = pd.to_numeric(df["auto_score"], errors="coerce").fillna(0)
+    df["review_score"] = pd.to_numeric(df["review_score"], errors="coerce").fillna(0)
+    df["total_score"] = (df["auto_score"] + df["review_score"]).clip(upper=120)
 
-def generate_markdown(entries):
-    if not entries:
-        return "# 🏆 #codechallenge2025 Leaderboard\n\nNo submissions yet.\n\n---\n*Auto-updated on every test run.*\n"
-
-    df = pd.DataFrame(entries)
-    df["score"] = pd.to_numeric(df["score"])
-    df["time"] = pd.to_numeric(df["time"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df = df.sort_values(by=["score", "time"], ascending=[False, True])
+    # Sort by total score (desc), then runtime (asc for tie-break)
+    df = df.sort_values(by=["total_score", "runtime_sec"], ascending=[False, True])
     df = df.reset_index(drop=True)
     df["rank"] = range(1, len(df) + 1)
 
+    # Save full data to JSON
+    json_records = df.to_dict(orient="records")
+    with open(LEADERBOARD_JSON, "w") as f:
+        json.dump(json_records, f, indent=2)
+
+    # Generate clean Markdown leaderboard (no 'Features' column)
     md = "# 🏆 #codechallenge2025 Leaderboard\n\n"
     md += f"_Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}_\n\n"
-    md += "| Rank | User          | Score  | Accuracy | Time (s) | Date       | Run        |\n"
-    md += "|------|---------------|--------|----------|----------|------------|------------|\n"
+    md += "| Rank | User | Final Score | Auto | Review | Accuracy | Time (s) | Date |\n"
+    md += "|------|------|-------------|------|--------|----------|----------|------|\n"
 
     for _, row in df.iterrows():
-        user = row["user"]
-        run = row["pr"] if row["pr"] != "local-run" else "local"
-        run_link = (
-            f"[{row['pr']}]({row['pr_url']})"
-            if row.get("pr_url") and row["pr"] != "local-run"
-            else run
+        md += (
+            f"| {row['rank']} | {row['user']} | **{row['total_score']:.1f}** | "
+            f"{row['auto_score']:.1f} | {row['review_score']:.1f} | "
+            f"{row['accuracy']:.1%} | {row['runtime_sec']:.2f} | "
+            f"{row['submission_date']} |\n"
         )
-        md += f"| {row['rank']} | @{user} | **{row['score']:.1f}** | {row['accuracy']:.1%} | {row['time']:.2f} | {row['timestamp'].strftime('%Y-%m-%d')} | {run_link} |\n"
 
-    md += "\n---\n*Leaderboard auto-updated on every test run (local or CI).*\n"
-    return md
+    md += "\n---\n"
+    md += "**Scoring**: Final = Auto (0–100) + Review (0–20). Maximum = 120.\n"
+    md += "Auto score: based on accuracy, speed, and deadline compliance.\n"
+    md += "Review score: assigned manually based on code quality and feature completeness.\n"
 
-
-def main():
-    # Try CI environment variables first
-    score = os.getenv("SCORE")
-    accuracy = os.getenv("ACCURACY")
-    time_taken = os.getenv("TIME")
-    username = os.getenv("GH_USERNAME")
-    pr_number = os.getenv("PR_NUMBER")
-    pr_url = os.getenv("PR_URL")
-
-    # Fallback: read from local test_results.txt
-    local_file = "test_results.txt"
-    if not score and os.path.exists(local_file):
-        print("No CI environment detected — loading results from test_results.txt")
-        with open(local_file) as f:
-            lines = [line.strip() for line in f.readlines() if "=" in line]
-        vars_dict = {}
-        for line in lines:
-            k, v = line.split("=", 1)
-            vars_dict[k] = v
-
-        score = vars_dict.get("score")
-        accuracy = vars_dict.get("accuracy")
-        time_taken = vars_dict.get("time")
-        username = os.getenv(
-            "USER", os.getenv("USERNAME", "local-tester")
-        )  # best effort
-        pr_number = "local"
-        pr_url = ""
-
-    if not score:
-        print("No results found — skipping leaderboard update")
-        return
-
-    new_entry = {
-        "user": username or "unknown",
-        "score": float(score),
-        "accuracy": float(accuracy or 0),
-        "time": float(time_taken or 0),
-        "timestamp": datetime.utcnow().isoformat(),
-        "pr": f"#{pr_number}" if pr_number and pr_number != "local" else "local-run",
-        "pr_url": pr_url or "",
-    }
-
-    entries = load_leaderboard()
-    # Remove previous entry from same run (local or same PR)
-    entries = [e for e in entries if e.get("pr") != new_entry["pr"]]
-    entries.append(new_entry)
-
-    save_leaderboard(entries)
-
-    md_content = generate_markdown(entries)
     with open(LEADERBOARD_MD, "w") as f:
-        f.write(md_content)
+        f.write(md)
 
-    print(f"Leaderboard updated → {LEADERBOARD_MD} & {LEADERBOARD_JSON}")
-    print(f"   New entry: @{new_entry['user']} — Score: {new_entry['score']:.1f}")
+    print(f"✅ Leaderboard updated from {CSV_INPUT}")
+    print(f"   → {LEADERBOARD_MD} and {LEADERBOARD_JSON}")
 
 
 if __name__ == "__main__":

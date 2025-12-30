@@ -1,0 +1,8 @@
+filename,user,submission_date,is_late,accuracy,runtime_sec,auto_score,review_score,features,comments,error
+AmiraliShadi_20251218.py,Amiralishadi,12/18/2025,FALSE,0,237.55,0,20,,,
+Bahman_Farhadian_20251221.py,Bahman,12/21/2025,TRUE,0.6,331.57,60,15,,,
+ali-sefidmouy_20251218.py,Ali Sefidmouy,12/18/2025,FALSE,0.114286,804.42,11.4,6,,,
+jd7943426-max_20251218.py,Jd7943426 Max,12/18/2025,FALSE,0,278.17,0,13,,,
+mhngar_20251220.py,Mhngar,12/20/2025,TRUE,0.457143,146.13,55.7,20,,,
+sina-moammar_20251218.py,Sina Moammar,12/18/2025,FALSE,0.371429,1028.39,37.1,8,,,
+Benyamin_Jazayeri_20251218.py,Benyamin_Jazayeri,12/18/2025,FALSE,0,50000,0,14,,,

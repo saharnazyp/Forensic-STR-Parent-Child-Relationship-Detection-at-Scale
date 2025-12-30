@@ -12,7 +12,7 @@ import os
 # Configuration
 # -------------------------------
 
-NUM_DB_PROFILES = 5000  # Total mixed profiles in database
+NUM_DB_PROFILES = 500000  # Total mixed profiles in database
 NUM_QUERIES = 40  # Number of query profiles
 NUM_TRUE_PAIRS = 35  # Number of queries with a true match in DB
 
